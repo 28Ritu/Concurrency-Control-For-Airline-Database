@@ -71,6 +71,7 @@ class FlightDB
 		all_flights=new ArrayList<Flight>();
 	}
 }
+
 class Flight
 {
 	int total_seats, av_seats, reserved;

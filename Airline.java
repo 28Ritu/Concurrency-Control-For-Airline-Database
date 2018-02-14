@@ -59,13 +59,11 @@ class Passenger
 		myflights=new ArrayList<Flight>();
 		lock=new ReentrantReadWriteLock();
 	}
-	
 }
 class PassengerDB
 {
 	ArrayList<Passenger> all_passengers;
 	ReentrantReadWriteLock lock;
-	int lockorder=Integer.MAX_VALUE-1;
 	public PassengerDB()
 	{
 		all_passengers=new ArrayList<Passenger>();
@@ -76,28 +74,24 @@ class FlightDB
 {
 	ArrayList<Flight> all_flights;
 	ReentrantReadWriteLock lock;
-	int lockorder=Integer.MAX_VALUE;
 	public FlightDB()
 	{
 		all_flights=new ArrayList<Flight>();
 		lock=new ReentrantReadWriteLock();
 	}
 }
-class Flight implements Comparable<Flight>
+class Flight
 {
 	int total_seats, av_seats, reserved;
 	String ID, name, source, destination, departure, arrival;
 	ArrayList<String> passenger_list;
 	ReentrantReadWriteLock lock;
-	int lockorder;
-	static int id=0;
 	public Flight()
 	{
 		ID=name=source=destination=departure=arrival="";
 		total_seats=av_seats=reserved=0;
 		passenger_list=new ArrayList<String>();
 		lock=new ReentrantReadWriteLock();
-		lockorder=++id;
 	}
 	public void reserve(String i)
 	{
@@ -111,10 +105,6 @@ class Flight implements Comparable<Flight>
 		av_seats+=1;
 		reserved-=1;
 	}
-	public int compareTo(Flight o) 
-	{
-		return (this.lockorder > o.lockorder) ? 1 : (this.lockorder < o.lockorder) ? -1 : 0;
-	}
 }
 class Transaction implements Runnable
 {
@@ -127,26 +117,6 @@ class Transaction implements Runnable
 		pDB=pDB1;
 		fDB=fDB1;
 		tid=++id;
-	}
-	public void writeReserve(Flight F, String i)
-	{
-		if (F.av_seats==0)
-			System.out.println("Sorry!!! Flight "+F.ID+" "+F.name+" is full.");
-		else
-		{
-			Passenger p=new Passenger();
-			for (int j=0; j<pDB.all_passengers.size(); j++)
-			{
-				if (pDB.all_passengers.get(j).pID.equals(i))
-				{
-					p=pDB.all_passengers.get(j);
-					break;
-				}
-			}
-			F.reserve(i);
-			p.myflights.add(F);
-			System.out.println("Reservation successful on Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
-		}
 	}
 	public void Reserve(Flight F, String i)
 	{	

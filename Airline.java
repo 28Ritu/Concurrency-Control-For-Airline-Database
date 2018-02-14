@@ -3,11 +3,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Queue;
 import java.util.Random;
 import java.util.StringTokenizer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.lang.*;
 class InReader {
     static BufferedReader reader;
@@ -47,41 +51,53 @@ class Passenger
 	int age;
 	String name, gender, pID;
 	ArrayList<Flight> myflights;
+	ReentrantReadWriteLock lock;
 	public Passenger()
 	{
 		age=0;
 		name=gender=pID="";
 		myflights=new ArrayList<Flight>();
+		lock=new ReentrantReadWriteLock();
 	}
 	
 }
 class PassengerDB
 {
 	ArrayList<Passenger> all_passengers;
+	ReentrantReadWriteLock lock;
+	int lockorder=Integer.MAX_VALUE-1;
 	public PassengerDB()
 	{
 		all_passengers=new ArrayList<Passenger>();
+		lock=new ReentrantReadWriteLock();
 	}
 }
 class FlightDB
 {
 	ArrayList<Flight> all_flights;
+	ReentrantReadWriteLock lock;
+	int lockorder=Integer.MAX_VALUE;
 	public FlightDB()
 	{
 		all_flights=new ArrayList<Flight>();
+		lock=new ReentrantReadWriteLock();
 	}
 }
-
-class Flight
+class Flight implements Comparable<Flight>
 {
 	int total_seats, av_seats, reserved;
 	String ID, name, source, destination, departure, arrival;
 	ArrayList<String> passenger_list;
+	ReentrantReadWriteLock lock;
+	int lockorder;
+	static int id=0;
 	public Flight()
 	{
 		ID=name=source=destination=departure=arrival="";
 		total_seats=av_seats=reserved=0;
 		passenger_list=new ArrayList<String>();
+		lock=new ReentrantReadWriteLock();
+		lockorder=++id;
 	}
 	public void reserve(String i)
 	{
@@ -95,132 +111,233 @@ class Flight
 		av_seats+=1;
 		reserved-=1;
 	}
+	public int compareTo(Flight o) 
+	{
+		return (this.lockorder > o.lockorder) ? 1 : (this.lockorder < o.lockorder) ? -1 : 0;
+	}
 }
 class Transaction implements Runnable
 {
 	PassengerDB pDB;
 	FlightDB fDB;
-	ReentrantLock lock;
-	String name;
-	public Transaction(PassengerDB pDB1, FlightDB fDB1, ReentrantLock l, String s)
+	int tid;
+	static int id=0;
+	public Transaction(PassengerDB pDB1, FlightDB fDB1)
 	{
 		pDB=pDB1;
 		fDB=fDB1;
-		lock=l;
-		name=s;
+		tid=++id;
+	}
+	public void writeReserve(Flight F, String i)
+	{
+		if (F.av_seats==0)
+			System.out.println("Sorry!!! Flight "+F.ID+" "+F.name+" is full.");
+		else
+		{
+			Passenger p=new Passenger();
+			for (int j=0; j<pDB.all_passengers.size(); j++)
+			{
+				if (pDB.all_passengers.get(j).pID.equals(i))
+				{
+					p=pDB.all_passengers.get(j);
+					break;
+				}
+			}
+			F.reserve(i);
+			p.myflights.add(F);
+			System.out.println("Reservation successful on Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
+		}
 	}
 	public void Reserve(Flight F, String i)
-	{
+	{	
 		boolean done=false;
-		while (!done)
+		while(!done)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
+			if(fDB.lock.writeLock().tryLock())
 			{
 				try
 				{
-					if (F.av_seats==0)
-						System.out.println("Sorry!!! Flight "+F.ID+" "+F.name+" is full.");
-					else
+					if (F.lock.readLock().tryLock())
 					{
-						Passenger p=new Passenger();
-						for (int j=0; j<pDB.all_passengers.size(); j++)
+						if (F.av_seats==0)
+								System.out.println(tid+"Sorry!!! Flight "+F.ID+" "+F.name+" is full.");
+						else
 						{
-							if (pDB.all_passengers.get(j).pID.equals(i))
+							if (pDB.lock.writeLock().tryLock())
 							{
-								p=pDB.all_passengers.get(j);
-								break;
+								try
+								{
+									Passenger p=new Passenger();
+									for (int j=0; j<pDB.all_passengers.size(); j++)
+									{
+										if (pDB.all_passengers.get(j).pID.equals(i))
+										{
+											p=pDB.all_passengers.get(j);
+											break;
+										}
+									}
+									F.lock.readLock().unlock();
+									if (F.lock.writeLock().tryLock())
+									{
+										try
+										{
+											if (p.lock.writeLock().tryLock())
+											{
+												try
+												{
+													F.reserve(i);
+													p.myflights.add(F);
+													System.out.println(tid+"Reservation successful on Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
+													break;
+												}
+												finally
+												{
+													p.lock.writeLock().unlock();
+												}
+											}
+										}
+										finally
+										{
+											F.lock.writeLock().unlock();
+										}
+									}
+								}
+								finally
+								{
+									pDB.lock.writeLock().unlock();
+								}
 							}
 						}
-						F.reserve(i);
-						p.myflights.add(F);
-						System.out.println("Reservation successful on Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
 					}
 				}
 				finally
 				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
+					fDB.lock.writeLock().unlock();
 				}
-				done=true;
 			}
-		}			
+			done=true;
+		}
 	}
 	public void Cancel(Flight F, String i)
 	{
 		boolean done=false;
-		while (!done)
+		while(!done)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
+			if(fDB.lock.writeLock().tryLock())
 			{
 				try
 				{
-					if (F.passenger_list.contains(i)==false)
-						System.out.println("No Passenger With ID "+i+" in Flight "+F.ID);
-					else
+					if (F.lock.readLock().tryLock())
 					{
-						Passenger p=new Passenger();
-						for (int j=0; j<pDB.all_passengers.size(); j++)
+						if (F.av_seats==0)
+								System.out.println(tid+"Sorry!!! Flight "+F.ID+" "+F.name+" is full.");
+						else
 						{
-							if (pDB.all_passengers.get(j).pID.equals(i))
+							if (pDB.lock.writeLock().tryLock())
 							{
-								p=pDB.all_passengers.get(j);
-								break;
+								try
+								{
+									Passenger p=new Passenger();
+									for (int j=0; j<pDB.all_passengers.size(); j++)
+									{
+										if (pDB.all_passengers.get(j).pID.equals(i))
+										{
+											p=pDB.all_passengers.get(j);
+											break;
+										}
+									}
+									F.lock.readLock().unlock();
+									if (F.lock.writeLock().tryLock())
+									{
+										try
+										{
+											if (p.lock.writeLock().tryLock())
+											{
+												try
+												{
+													F.cancel(i);
+													p.myflights.remove(F);
+													System.out.println(tid+"Cancellation successful for Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
+													break;
+												}
+												finally
+												{
+													p.lock.writeLock().unlock();
+												}
+											}
+										}
+										finally
+										{
+											F.lock.writeLock().unlock();
+										}
+									}
+								}
+								finally
+								{
+									pDB.lock.writeLock().unlock();
+								}
 							}
 						}
-						F.cancel(i);
-						p.myflights.remove(F);
-						System.out.println("Cancellation successful for Flight "+F.ID+" "+F.name+" for Passenger "+p.pID+" "+p.name);
 					}
 				}
 				finally
 				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
+					fDB.lock.writeLock().unlock();
 				}
-				done=true;
 			}
-		}			
-	}
+			done=true;
+		}
+	}			
 	public void My_Flights(String id)
 	{
 		boolean done=false;
 		while (!done)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
+			if (pDB.lock.readLock().tryLock())
 			{
 				try
 				{
 					Passenger p=new Passenger();
-					for (int i=0; i<pDB.all_passengers.size(); i++)
+					for (int j=0; j<pDB.all_passengers.size(); j++)
 					{
-						if (pDB.all_passengers.get(i).pID.equals(id))
+						if (pDB.all_passengers.get(j).pID.equals(id))
 						{
-							p=pDB.all_passengers.get(i);
+							p=pDB.all_passengers.get(j);
 							break;
 						}
 					}
 					if (p==null)
-						System.out.println("No Passenger With "+id);
-					else if (p.myflights.size()==0)
-						System.out.println("No Flights In The List for Passenger "+p.pID+" "+p.name);
-					else
 					{
-						System.out.println("Passenger "+p.pID+" "+p.name+" Flight List: ");
-						System.out.println("Flight ID "+" Flight Name "+" Source "+" Destination "+" Departure Time "+" Arrival Time "+" Total Seats");
-						for (int i=0; i<p.myflights.size(); i++)
-							System.out.println(p.myflights.get(i).ID+" "+p.myflights.get(i).name+" "+p.myflights.get(i).source+" "+p.myflights.get(i).destination+" "+p.myflights.get(i).departure+" "+p.myflights.get(i).arrival);
+						System.out.println(tid+"No Passenger With "+id);
+						break;
+					}
+					else if (p.lock.readLock().tryLock())
+					{
+						try
+						{
+							if (p.myflights.size()==0)
+								System.out.println(tid+"No Flights In The List for Passenger "+p.pID+" "+p.name);
+							else
+							{
+								System.out.println(tid+"Passenger "+p.pID+" "+p.name+" Flight List: ");
+								System.out.println("Flight ID "+" Flight Name "+" Source "+" Destination "+" Departure Time "+" Arrival Time "+" Total Seats");
+								for (int i=0; i<p.myflights.size(); i++)
+									System.out.println(p.myflights.get(i).ID+" "+p.myflights.get(i).name+" "+p.myflights.get(i).source+" "+p.myflights.get(i).destination+" "+p.myflights.get(i).departure+" "+p.myflights.get(i).arrival);
+							}
+							break;
+						}
+						finally
+						{
+							p.lock.readLock().unlock();
+						}
 					}
 				}
 				finally
 				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
+					pDB.lock.readLock().unlock();
 				}
-				done=true;
 			}
+			done=true;
 		}			
 	}
 	public void Total_Reservations()
@@ -228,23 +345,22 @@ class Transaction implements Runnable
 		boolean done=false;
 		while (!done)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
+			if (fDB.lock.readLock().tryLock())
 			{
 				try
 				{
 					int sum=0;
 					for (int i=0; i<fDB.all_flights.size(); i++)
 						sum+=fDB.all_flights.get(i).reserved;
-					System.out.println("Sum Total Of All Reservations On All Flights : "+sum);
+					System.out.println(tid+"Sum Total Of All Reservations On All Flights : "+sum);
+					break;
 				}
 				finally
 				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
+					fDB.lock.readLock().unlock();
 				}
-				done=true;
 			}
+			done=true;
 		}
 	}
 	public void Transfer(Flight F1, Flight F2, String i)
@@ -252,91 +368,120 @@ class Transaction implements Runnable
 		boolean done=false;
 		while (!done)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
+			if(fDB.lock.writeLock().tryLock())
 			{
 				try
 				{
-					if (F1.passenger_list.contains(i)==false)
-						System.out.println("No Passenger With ID "+i+" in Flight "+F1.ID);
-					else if (F2.av_seats==0)
-						System.out.println("Sorry!!! Flight "+F2.ID+" is full.");
-					else
+					if (F1.lock.readLock().tryLock())
 					{
-						Passenger p=new Passenger();
-						for (int j=0; j<pDB.all_passengers.size(); j++)
+						if (F2.lock.readLock().tryLock())
 						{
-							if (pDB.all_passengers.get(j).pID.equals(i))
-							{
-								p=pDB.all_passengers.get(j);
-								break;
+							if (F1.passenger_list.contains(i)==false)
+									System.out.println("No Passenger With ID "+i+" in Flight "+F1.ID);
+								else if (F2.av_seats==0)
+									System.out.println("Sorry!!! Flight "+F2.ID+" is full.");
+								else
+								{
+									if (pDB.lock.writeLock().tryLock())
+									{
+										try
+										{
+											Passenger p=new Passenger();
+											for (int j=0; j<pDB.all_passengers.size(); j++)
+											{
+												if (pDB.all_passengers.get(j).pID.equals(i))
+												{
+													p=pDB.all_passengers.get(j);
+													break;
+												}
+											}
+											F1.lock.readLock().unlock();
+											if (F1.lock.writeLock().tryLock())
+											{
+												try
+												{
+													F2.lock.readLock().unlock();
+													if (F2.lock.writeLock().tryLock())
+													{
+														try
+														{
+															if (p.lock.writeLock().tryLock())
+															{
+																try
+																{
+																	F1.cancel(i);
+																	
+																	F2.reserve(i);
+																	
+																	p.myflights.remove(F1);
+																	p.myflights.add(F2);
+																	
+																	System.out.println("Transfer Successful "+p.name+" transferred from Flight "+F1.name+" to Flight "+F2.name);
+																	break;
+																}
+																finally
+																{
+																	p.lock.writeLock().unlock();
+																}
+															}
+														}
+														finally
+														{
+															F2.lock.writeLock().unlock();
+														}
+													}
+												}
+												finally
+												{
+													F1.lock.writeLock().unlock();
+												}
+											}
+										}
+										finally
+										{
+											pDB.lock.writeLock().unlock();
+										}
+									}
+								}
 							}
 						}
-						F1.cancel(i);
-						
-						F2.reserve(i);
-						
-						p.myflights.remove(F1);
-						p.myflights.add(F2);
-						
-						System.out.println("Transfer Successful "+F1.passenger_list.contains(p)+" "+F2.passenger_list.contains(p));
-					}
 				}
 				finally
 				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
+					fDB.lock.writeLock().unlock();
 				}
-				done=true;
 			}
-		}
+			done=true;
+		}	
 	}
 	public void run()
 	{
-		boolean done=false;
-		while (!done)
+		System.out.println(tid+" running");
+		Random rn=new Random();
+		int number=rn.nextInt(5)+1;
+		System.out.println("random="+number+" "+tid);
+		Random rn1=new Random();
+		int flight_no=1;
+		int passenger_no=rn1.nextInt(pDB.all_passengers.size()-1);
+		//System.out.println("Flight "+fDB.all_flights.get(flight_no).ID+" Passenger "+pDB.all_passengers.get(passenger_no).pID);
+		switch(number)
 		{
-			boolean ans=lock.tryLock();
-			if (ans)
-			{
-				try
-				{
-					System.out.println(name+"running");
-					Random rn=new Random();
-					int number=rn.nextInt(5)+1;
-					//System.out.println("random="+number);
-					Random rn1=new Random();
-					int flight_no=rn1.nextInt(5);
-					int passenger_no=rn1.nextInt(pDB.all_passengers.size()-1);
-					//System.out.println("Flight "+fDB.all_flights.get(flight_no).ID+" Passenger "+pDB.all_passengers.get(passenger_no).pID);
-					switch(number)
-					{
-					case 1: Reserve(fDB.all_flights.get(flight_no), pDB.all_passengers.get(passenger_no).pID);
-							break;
-					case 2: Cancel(fDB.all_flights.get(flight_no), pDB.all_passengers.get(passenger_no).pID);
-							break;
-					case 3: My_Flights(pDB.all_passengers.get(passenger_no).pID);
-							break;
-					case 4: Total_Reservations();
-							break;
-					case 5: Random rn2=new Random();
-							int flight_no2=rn2.nextInt(5);
-							while (flight_no==flight_no2)
-								flight_no2=rn1.nextInt(5);
-							Transfer(fDB.all_flights.get(flight_no), fDB.all_flights.get(flight_no2), pDB.all_passengers.get(passenger_no).pID);
-							break;
-					}
-					//Total_Reservations();
-					System.out.println(name+" stopped");
-				}
-				finally
-				{
-					lock.unlock();
-					//System.out.println(name+" stopped");
-				}
-				done=true;
-			}
+		case 1: Reserve(fDB.all_flights.get(flight_no), pDB.all_passengers.get(passenger_no).pID);
+				break;
+		case 2: Cancel(fDB.all_flights.get(flight_no), pDB.all_passengers.get(passenger_no).pID);
+				break;
+		case 3: My_Flights(pDB.all_passengers.get(passenger_no).pID);
+				break;
+		case 4: Total_Reservations();
+				break;
+		case 5: Random rn2=new Random();
+				int flight_no2=rn2.nextInt(5);
+				while (flight_no==flight_no2)
+					flight_no2=rn1.nextInt(5);
+				Transfer(fDB.all_flights.get(flight_no), fDB.all_flights.get(flight_no2), pDB.all_passengers.get(passenger_no).pID);
+				break;
 		}
+		System.out.println(tid+" stopped");
 	}	
 }
 public class Airline {
@@ -423,12 +568,12 @@ public class Airline {
 			newDB.all_passengers.add(p);
 		}
 
-		ReentrantLock lock=new ReentrantLock();
+		ReentrantReadWriteLock lock=new ReentrantReadWriteLock();
 		ExecutorService pool = Executors.newFixedThreadPool(4);
-	    Runnable t1 = new Transaction(newDB, fDB, lock, "1st");
-	    Runnable t2 = new Transaction(newDB, fDB, lock, "2nd");
-	    Runnable t3 = new Transaction(newDB, fDB, lock, "3rd");
-	    Runnable t4 = new Transaction(newDB, fDB, lock, "4th");
+	    Runnable t1 = new Transaction(newDB, fDB);
+	    Runnable t2 = new Transaction(newDB, fDB);
+	    Runnable t3 = new Transaction(newDB, fDB);
+	    Runnable t4 = new Transaction(newDB, fDB);
 	    pool.execute(t1);
 	    pool.execute(t2);
 	    pool.execute(t3);
@@ -436,3 +581,4 @@ public class Airline {
 	    pool.shutdown();
 	}
 }
+
